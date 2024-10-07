@@ -1,0 +1,68 @@
+,CRFM as (select
+donor_id,
+-- count(distinct donation_id) as frequency,
+sum(donations) as frequency,
+sum(cte2.AUD_REVENUE) as monetary,
+-- DATE_DIFF(CURRENT_DATE(), max(date(transaction_date)), DAY) AS recency,
+DATE_DIFF(CURRENT_DATE(), max(date(dot)), DAY) AS recency
+from cte2
+group by 1)
+
+,RFM as
+(SELECT
+  donor_id,
+  frequency,
+  monetary,
+  recency,
+  CASE
+    WHEN recency >= PERCENTILE_CONT(recency, 0.75) OVER () THEN 1
+    WHEN recency >= PERCENTILE_CONT(recency, 0.5) OVER () AND recency < PERCENTILE_CONT(recency, 0.75) OVER () THEN 2
+    WHEN recency >= PERCENTILE_CONT(recency, 0.25) OVER () AND recency < PERCENTILE_CONT(recency, 0.5) OVER () THEN 3
+    WHEN recency <= PERCENTILE_CONT(recency, 0.25) OVER () THEN 4
+  END AS R_Score,
+  CASE
+    WHEN frequency <= PERCENTILE_CONT(frequency, 0.25) OVER () THEN 1
+    WHEN frequency >= PERCENTILE_CONT(frequency, 0.25) OVER () AND frequency < PERCENTILE_CONT(frequency, 0.5) OVER () THEN 2
+    WHEN frequency >= PERCENTILE_CONT(frequency, 0.5) OVER () AND frequency < PERCENTILE_CONT(frequency, 0.75) OVER () THEN 3
+    WHEN frequency >= PERCENTILE_CONT(frequency, 0.75) OVER () THEN 4
+  END AS F_Score,
+  CASE
+    WHEN monetary <= PERCENTILE_CONT(monetary, 0.25) OVER () THEN 1
+    WHEN monetary >= PERCENTILE_CONT(monetary, 0.25) OVER () AND monetary < PERCENTILE_CONT(monetary, 0.5) OVER () THEN 2
+    WHEN monetary >= PERCENTILE_CONT(monetary, 0.5) OVER () AND monetary < PERCENTILE_CONT(monetary, 0.75) OVER () THEN 3
+    WHEN monetary >= PERCENTILE_CONT(monetary, 0.75) OVER () THEN 4
+  END AS M_Score,
+  -- 100 * R_Score + 10 * F_Score + M_Score AS CRFM_Score
+FROM
+  CRFM)
+
+,CCRFM as (select *,
+  (100 * R_Score) + (10 * F_Score) + (M_Score) AS CRFM_Score from RFM)
+
+SELECT
+  *,
+  CASE
+    WHEN CRFM_Score = 444 THEN 'Champion'
+    WHEN CRFM_Score IN (334,342,343,344,433,434,443) THEN 'Loyal Customer'
+    WHEN CRFM_Score IN (341,332,333,412,413,414,431,432,441,442,421,422,423,424) THEN 'Potential Loyalist'
+    WHEN CRFM_Score = 411 THEN 'Recent Customer'
+    WHEN CRFM_Score IN (311,312,313,331) THEN 'Promising'
+    WHEN CRFM_Score IN (212,213,214,231,232,233,241,314,321,322,323,324) THEN 'Needing Attention'
+    WHEN CRFM_Score = 211 THEN 'About to Sleep'
+    WHEN CRFM_Score IN (112,113,114,131,132,133,142,124,123,122,121,224,223,222,221) THEN 'At Risk'
+    WHEN CRFM_Score IN (134,143,144,234,242,243,244) THEN 'Cant Lose'
+    WHEN CRFM_Score = 141 THEN 'Hibernating'
+    WHEN CRFM_Score = 111 THEN 'Lost'
+    ELSE 'Other'
+  END AS CATEGORY
+  
+FROM
+  CCRFM
+  left join
+  (select distinct donor_id, 
+  case when NC = 'United Kingdom (UK)' then 'United Kingdom'
+when NC = 'United States (US)' then 'United States' else NC end as Country 
+from cte2)
+  using(donor_id)
+  ;
+-- This SQL code adds a CASE statement that categorizes the records based on the provided CRFM Score categories. Each case maps the CRFM_Score values to their respective category names. You can replace 'Other' with whatever label you want for scores that don't fall into the defined categories.
