@@ -1,0 +1,249 @@
+WITH
+  cte_base AS (
+  SELECT
+    'healthandcommerce' brand,
+    privacy_info.dataset_storage,
+    privacy_info.ads_storage,user_ltv.revenue,event_name,
+    event_date,
+    event_timestamp,
+    event_params,
+    traffic_source,
+    user_pseudo_id,
+    user_id,
+    session_traffic_source_last_click.cross_channel_campaign.`source` AS session_source,
+    session_traffic_source_last_click.cross_channel_campaign.medium AS session_medium,
+    session_traffic_source_last_click.cross_channel_campaign.default_channel_group,
+    session_traffic_source_last_click.cross_channel_campaign.campaign_name AS session_campaign,
+    _table_suffix,
+    user_first_touch_timestamp
+  FROM
+    `workspace_id.dataset_353569974.events_2*`
+  WHERE
+    0=0
+    AND _table_suffix NOT LIKE "%intraday%"
+  GROUP BY
+    ALL
+  UNION ALL
+  SELECT
+    'biostratamarketing' brand,
+    privacy_info.dataset_storage,
+    privacy_info.ads_storage,user_ltv.revenue,event_name,
+    event_date,
+    event_timestamp,
+    event_params,
+    traffic_source,
+    user_pseudo_id,
+    user_id,
+    session_traffic_source_last_click.cross_channel_campaign.`source` AS session_source,
+    session_traffic_source_last_click.cross_channel_campaign.medium AS session_medium,
+    session_traffic_source_last_click.cross_channel_campaign.default_channel_group,
+    session_traffic_source_last_click.cross_channel_campaign.campaign_name AS session_campaign,
+    _table_suffix,
+    user_first_touch_timestamp
+  FROM
+    `workspace_id.dataset_313671647.events_2*`
+  WHERE
+    0=0
+    AND _table_suffix NOT LIKE "%intraday%"
+  GROUP BY
+    ALL
+  UNION ALL
+  SELECT
+    'clarityqst' brand,
+    privacy_info.dataset_storage,
+    privacy_info.ads_storage,user_ltv.revenue,event_name,
+    event_date,
+    event_timestamp,
+    event_params,
+    traffic_source,
+    user_pseudo_id,
+    user_id,
+    session_traffic_source_last_click.cross_channel_campaign.`source` AS session_source,
+    session_traffic_source_last_click.cross_channel_campaign.medium AS session_medium,
+    session_traffic_source_last_click.cross_channel_campaign.default_channel_group,
+    session_traffic_source_last_click.cross_channel_campaign.campaign_name AS session_campaign,
+    _table_suffix,
+    user_first_touch_timestamp
+  FROM
+    `workspace_id.dataset_250582362.events_2*`
+  WHERE
+    0=0
+    AND _table_suffix NOT LIKE "%intraday%"
+  GROUP BY
+    ALL
+  UNION ALL
+  SELECT
+    'SupremeOpti' brand,
+    privacy_info.dataset_storage,
+    privacy_info.ads_storage,user_ltv.revenue,event_name,
+    event_date,
+    event_timestamp,
+    event_params,
+    traffic_source,
+    user_pseudo_id,
+    user_id,
+    session_traffic_source_last_click.cross_channel_campaign.`source` AS session_source,
+    session_traffic_source_last_click.cross_channel_campaign.medium AS session_medium,
+    session_traffic_source_last_click.cross_channel_campaign.default_channel_group,
+    session_traffic_source_last_click.cross_channel_campaign.campaign_name AS session_campaign,
+    _table_suffix,
+    user_first_touch_timestamp
+  FROM
+    `workspace_id.dataset_250075142.events_2*`
+  WHERE
+    0=0
+    AND _table_suffix NOT LIKE "%intraday%"
+  GROUP BY
+    ALL 
+    UNION ALL
+  SELECT
+    'kadiko' brand,
+    privacy_info.dataset_storage,
+    privacy_info.ads_storage,user_ltv.revenue,event_name,
+    event_date,
+    event_timestamp,
+    event_params,
+    traffic_source,
+    user_pseudo_id,
+    user_id,
+    session_traffic_source_last_click.cross_channel_campaign.`source` AS session_source,
+    session_traffic_source_last_click.cross_channel_campaign.medium AS session_medium,
+    session_traffic_source_last_click.cross_channel_campaign.default_channel_group,
+    session_traffic_source_last_click.cross_channel_campaign.campaign_name AS session_campaign,
+    _table_suffix,
+    user_first_touch_timestamp
+  FROM
+    `workspace_id.dataset_442880439.events_2*`
+  WHERE
+    0=0
+    AND _table_suffix NOT LIKE "%intraday%"
+  GROUP BY
+    ALL
+  UNION ALL
+    SELECT
+    'amendola ' brand,
+    privacy_info.dataset_storage,
+    privacy_info.ads_storage,user_ltv.revenue,event_name,
+    event_date,
+    event_timestamp,
+    event_params,
+    traffic_source,
+    user_pseudo_id,
+    user_id,
+    session_traffic_source_last_click.cross_channel_campaign.`source` AS session_source,
+    session_traffic_source_last_click.cross_channel_campaign.medium AS session_medium,
+    session_traffic_source_last_click.cross_channel_campaign.default_channel_group,
+    session_traffic_source_last_click.cross_channel_campaign.campaign_name AS session_campaign,
+    _table_suffix,
+    user_first_touch_timestamp
+  FROM
+    `workspace_id.dataset_421700231.events_2*`
+  WHERE
+    0=0
+    AND _table_suffix NOT LIKE "%intraday%"
+  GROUP BY
+    ALL
+    )
+
+
+,cte as(SELECT
+distinct
+  brand,revenue,
+  -- _table_suffix,
+  TIMESTAMP_MICROS(user_first_touch_timestamp) frst_touct_time,
+  -- dataset_storage,
+  -- ads_storage,
+  event_date,event_name,
+  TIMESTAMP_MICROS(event_timestamp) time_,
+  user_pseudo_id,
+  first_value(user_id ignore nulls)over(partition by user_pseudo_id order by user_first_touch_timestamp)user_id,
+  (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id') AS session_id,
+  CONCAT(user_pseudo_id) AS property_client_id,
+  (SELECT value.string_value  FROM   UNNEST(event_params)    WHERE  KEY = 'page_location') page_location,
+  REGEXP_EXTRACT((SELECT value.string_value  FROM   UNNEST(event_params)    WHERE  KEY = 'page_location'), r'fbclid=([^&]*)') AS fbclid,
+  REGEXP_EXTRACT((SELECT value.string_value  FROM   UNNEST(event_params)    WHERE  KEY = 'page_location'), r'gclid=([^&]*)') AS gclid,
+  REGEXP_EXTRACT((SELECT value.string_value  FROM   UNNEST(event_params)    WHERE  KEY = 'page_location'), r'msclkid=([^&]*)') AS msclkid,
+  first_value(REGEXP_EXTRACT((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'page_location'), r'utm_source=([^&]*)') ignore nulls)over(partition by user_pseudo_id,(SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id') order by user_first_touch_timestamp) AS utm_source,
+  first_value(REGEXP_EXTRACT((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'page_location'), r'utm_medium=([^&]*)') ignore nulls)over(partition by user_pseudo_id,(SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id') order by user_first_touch_timestamp) AS utm_medium,
+  first_value(REGEXP_EXTRACT((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'page_location'), r'utm_campaign=([^&]*)') ignore nulls)over(partition by user_pseudo_id,(SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id') order by user_first_touch_timestamp) AS utm_campaign,
+  traffic_source.name AS _user_campaign_name,
+  traffic_source.medium AS user_medium,
+  traffic_source.source AS user_source,
+  session_campaign,
+  session_source,
+  session_medium,
+  default_channel_group
+FROM
+  cte_base
+WHERE
+  0=0 --
+  -- AND user_pseudo_id = "756866094.1739203733"
+  -- and user_pseudo_id in ("1037387446.1738673991")
+    -- and user_pseudo_id in ("1037387446.1738673991","1748108508.1738628921", "2019385542.1653308412","1179647282.1737979395")
+-- and user_pseudo_id = "101456760.1741325559"
+-- "1382507820.1741593438"
+-- "498556729.1740168025"
+-- GROUP BY   all
+)
+
+-- select
+-- *,
+-- coalesce(utm_source,session_source) session_source,
+-- coalesce(utm_medium,session_medium) session_medium,
+-- coalesce(utm_campaign,session_campaign) session_campaign
+-- from cte
+
+,co as(SELECT 
+  *EXCEPT(session_source, session_medium, session_campaign),
+  COALESCE(utm_source, session_source) AS session_source,
+  COALESCE(utm_medium, session_medium) AS session_medium,
+  COALESCE(utm_campaign, session_campaign) AS session_campaign
+FROM cte)
+
+select
+*,
+CASE 
+    WHEN LOWER(session_medium) = 'referral' THEN 'Referral'
+    WHEN LOWER(session_source) = '(direct)' AND (LOWER(session_medium) IN ('(not set)','(none)')) THEN 'Direct'
+    WHEN REGEXP_CONTAINS(LOWER(session_campaign), 'cross-network') THEN 'Cross-network'
+    
+    WHEN (REGEXP_CONTAINS(LOWER(session_source),'alibaba|amazon|google shopping|shopify|etsy|ebay|stripe|walmart')
+      OR REGEXP_CONTAINS(LOWER(session_campaign), '^(.*(([^a-df-z]|^)shop|shopping).*)$'))
+      AND REGEXP_CONTAINS(LOWER(session_medium), '^(.*cp.*|ppc|paid.*)$') THEN 'Paid Shopping'
+    
+    WHEN REGEXP_CONTAINS(LOWER(session_source),'baidu|bing|duckduckgo|ecosia|google|yahoo|yandex')
+      AND REGEXP_CONTAINS(LOWER(session_medium),'^(.*cp.*|ppc|paid.*)$') THEN 'Paid Search'
+    
+    WHEN REGEXP_CONTAINS(LOWER(session_source),'social_ads_|social_|badoo|facebook|fb|instagram|linkedin|pinterest|tiktok|twitter|whatsapp|social|ads')
+      AND REGEXP_CONTAINS(LOWER(session_medium),'^(.*cp.*|ppc|facebook|paid.*)$') THEN 'Paid Social'
+    
+    WHEN REGEXP_CONTAINS(LOWER(session_source),'dailymotion|disneyplus|netflix|youtube|vimeo|twitch|vimeo|youtube')
+      AND REGEXP_CONTAINS(LOWER(session_medium),'^(.*cp.*|ppc|paid.*)$') THEN 'Paid Video'
+    
+    WHEN LOWER(session_medium) IN ('display', 'banner', 'expandable', 'interstitial', 'cpm') THEN 'Display'
+    
+    WHEN REGEXP_CONTAINS(LOWER(session_source),'alibaba|amazon|google shopping|shopify|etsy|ebay|stripe|walmart')
+      OR REGEXP_CONTAINS(LOWER(session_campaign), '^(.*(([^a-df-z]|^)shop|shopping).*)$') THEN 'Organic Shopping'
+    
+    WHEN REGEXP_CONTAINS(LOWER(session_source),'badoo|facebook|fb|instagram|linkedin|pinterest|tiktok|twitter|whatsapp|social')
+      OR LOWER(session_medium) IN ('social','social-network','social-media','sm','social network','social media','facebook') THEN 'Organic Social'
+    
+    WHEN REGEXP_CONTAINS(LOWER(session_source),'dailymotion|disneyplus|netflix|youtube|vimeo|twitch|vimeo|youtube')
+      OR REGEXP_CONTAINS(LOWER(session_medium),'^(.*video.*)$') THEN 'Organic Video'
+    
+    WHEN REGEXP_CONTAINS(LOWER(session_source),'baidu|bing|duckduckgo|ecosia|google|yahoo|yandex')
+      OR LOWER(session_medium) = 'organic' THEN 'Organic Search'
+    
+    WHEN REGEXP_CONTAINS(LOWER(session_source),'email|e-mail|e_mail|e mail|Emailer|emailer|mail')
+      OR REGEXP_CONTAINS(LOWER(session_medium),'email|e-mail|e_mail|e mail') THEN 'Email'
+    
+    WHEN LOWER(session_medium) = 'affiliate' THEN 'Affiliates'
+    
+    WHEN LOWER(session_medium) = 'audio' THEN 'Audio'
+    WHEN LOWER(session_source) LIKE '%sms%' THEN 'SMS'
+    WHEN LOWER(session_medium) LIKE '%push'
+      OR REGEXP_CONTAINS(LOWER(session_medium),'mobile|notification') THEN 'Mobile Push Notifications'
+    
+    ELSE default_channel_group 
+  END AS channel_grouping_user
+  from co
