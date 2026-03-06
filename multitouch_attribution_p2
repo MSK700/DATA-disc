@@ -1,0 +1,152 @@
+with base as(select
+-- ga.*,
+property_createdate as hubspot_date, ga.*,
+    CASE
+      WHEN channel_grouping_user LIKE '%Word of Mouth%'            THEN 1
+      WHEN channel_grouping_user LIKE '%Referral%'                 THEN 1
+      WHEN channel_grouping_user LIKE '%Organic Social%'           THEN 2
+      WHEN channel_grouping_user LIKE '%Paid Social%'              THEN 2
+      WHEN channel_grouping_user LIKE '%Affiliate%'                THEN 4
+      WHEN channel_grouping_user LIKE '%Paid Search%'              THEN 5
+      WHEN channel_grouping_user LIKE '%Email%'                    THEN 6
+      WHEN channel_grouping_user LIKE '%Organic Search%'           THEN 7
+      WHEN channel_grouping_user LIKE '%ChatGPT%'                  THEN 8
+      WHEN channel_grouping_user LIKE '%Direct%'                   THEN 9
+      ELSE 99
+    END AS channel_priority,
+from workspace_id.analysis.sources ga
+join(select property_client_id,property_createdate from `workspace_id.analysis.hubspot_selected_fields_asper_sheets`) hub
+on 
+ga.property_client_id = hub.property_client_id
+and date(ga.time_) <= date(hub.property_createdate)
+where 0=0
+-- and hub.property_client_id = "GA1.1.756866094.1739203733"
+)
+
+
+,custom_touch as
+(
+  select
+  distinct
+  brand,
+  frst_touct_time as first_touchtime_user,
+  -- event_date
+  -- time_
+  user_pseudo_id,
+  user_id,
+  property_client_id,
+  -- fbclid
+  -- gclid
+  -- msclkid
+  max(revenue)over(partition by user_pseudo_id) as user_ltv,
+  first_value(utm_source ignore nulls)over (partition by user_pseudo_id order by frst_touct_time desc) as utm_customchannel_source,
+  first_value(utm_medium ignore nulls)over (partition by user_pseudo_id order by frst_touct_time desc) as utm_customchannel_medium,
+  first_value(utm_campaign ignore nulls)over (partition by user_pseudo_id order by frst_touct_time desc) as utm_customchannel_campaign,
+  _user_campaign_name,
+  user_medium,
+  user_source,
+  coalesce(first_value(utm_campaign ignore nulls)over (partition by user_pseudo_id order by frst_touct_time desc),session_campaign) as custom_channel_campaign,
+  session_source as custom_channel_source,
+  session_medium as custom_channel_medium,
+  -- default_channel_group,
+  channel_grouping_user,
+  channel_priority,
+    CASE 
+    WHEN  MIN(channel_priority)over(partition by user_pseudo_id) =1  THEN 'Word of Mouth/Referral'
+    WHEN  MIN(channel_priority)over(partition by user_pseudo_id) =2  THEN 'Social'
+    -- WHEN  MIN(channel_priority)over(partition by user_pseudo_id) =2  THEN 'Paid Social'
+    WHEN  MIN(channel_priority)over(partition by user_pseudo_id) =4  THEN 'Affiliate'
+    WHEN  MIN(channel_priority)over(partition by user_pseudo_id) =5  THEN 'Paid Search'
+    WHEN  MIN(channel_priority)over(partition by user_pseudo_id) =6  THEN 'Email'
+    WHEN  MIN(channel_priority)over(partition by user_pseudo_id) =7  THEN 'SEO'
+    WHEN  MIN(channel_priority)over(partition by user_pseudo_id) =8  THEN 'ChatGPT'
+    WHEN  MIN(channel_priority)over(partition by user_pseudo_id) =9  THEN 'Direct'
+    ELSE channel_grouping_user
+  END AS custom_channel,
+  from base
+  qualify MIN(channel_priority)over(partition by user_pseudo_id) = channel_priority
+
+)
+
+,first_touch as
+(
+  select
+  distinct
+  brand,
+  user_pseudo_id,
+  first_value(utm_source ignore nulls)over (partition by user_pseudo_id order by time_ ) as utm_firsttouch_source,
+  first_value(utm_medium ignore nulls)over (partition by user_pseudo_id order by time_ ) as utm_firsttouch_medium,
+  first_value(utm_campaign ignore nulls)over (partition by user_pseudo_id order by time_ ) as utm_firsttouch_campaign,
+  session_campaign as first_touch_campaign,
+  session_source as first_touch_source,
+  session_medium as first_touch_medium,
+  -- default_channel_group,
+  channel_grouping_user as first_touch_channel,
+  from base
+  qualify ROW_NUMBER() OVER (PARTITION BY user_pseudo_id ORDER BY time_) =1
+
+)
+
+,last_touch as
+(
+  select
+  distinct
+  brand,
+  user_pseudo_id,
+  first_value(utm_source ignore nulls)over (partition by user_pseudo_id order by time_ desc) as utm_lasttouch_source,
+  first_value(utm_medium ignore nulls)over (partition by user_pseudo_id order by time_ desc) as utm_lasttouch_medium,
+  first_value(utm_campaign ignore nulls)over (partition by user_pseudo_id order by time_ desc) as utm_lasttouch_campaign,
+  session_campaign as last_touch_campaign,
+  session_source as last_touch_source,
+  session_medium as last_touch_medium,
+  -- default_channel_group,
+  channel_grouping_user as last_touch_channel,
+  from base
+  qualify ROW_NUMBER() OVER (PARTITION BY user_pseudo_id ORDER BY time_ desc) =1
+
+)
+
+,all_touch_points as(
+  select
+user_pseudo_id,brand,
+string_agg( session_campaign) journey_campaign,
+string_agg( session_source) journey_source,
+string_agg( session_medium) journey_medium,
+string_agg( channel_grouping_user) journey_channel,
+journey_pages
+from base
+join
+(select user_pseudo_id,brand,
+string_agg( page_location ) journey_pages,
+from base where event_name = "page_view" group by all)
+using (user_pseudo_id,brand)
+WHERE
+  0=0
+  AND property_client_id IS NOT NULL
+  -- and lower(property_firstname) like "%talha%"
+  -- and property_hs_analytics_last_url like "%supreme%"
+  -- and property_client_id = "GA1.1.756866094.1739203733"
+and event_name = "session_start"
+  group by all)
+
+
+
+select
+* from 
+custom_touch
+join
+last_touch
+using(user_pseudo_id,brand)
+join
+first_touch
+using(user_pseudo_id,brand)
+join
+all_touch_points 
+using(user_pseudo_id,brand)
+where 0=0
+  -- and user_pseudo_id in ("1037387446.1738673991")
+  -- and property_client_id = "GA1.1.756866094.1739203733"
+    -- and user_pseudo_id in ("1037387446.1738673991","1748108508.1738628921", "2019385542.1653308412","1179647282.1737979395")
+    -- and user_pseudo_id = "498556729.1740168025"
+-- and user_pseudo_id = "101456760.1741325559"
+--  "1382507820.1741593438"
