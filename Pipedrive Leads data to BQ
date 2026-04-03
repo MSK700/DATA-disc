@@ -1,0 +1,137 @@
+library(httr)      # API call karne ke liye
+library(jsonlite)  # JSON data ko readable banane ke liye
+library(dplyr)     # Data manipulation (bind_rows) ke liye
+library(bigrquery) # BigQuery mein data upload karne ke liye
+
+# --- CONFIGURATION ---
+api_token <- ""
+company_domain <- ""
+
+# Hexa columns ko unke asli naamo mein badalne ki mapping
+col_map <- c(
+  "8e57c7b1a047cc35adfdedbcafe6f854e443476a" = "Booking_Source",
+  "ee4820400c1f59c96fbc2ac0994e42a98d055810" = "Discovery_Meeting_Date",
+  "113c158c673c17fd6fdc49f56434c2d17625788c" = "Discovery_Meeting_Status",
+  "5e6c731503f7d99a2d14eeaf6b9d88db670870a8" = "Discovery_Rescheduled_Meeting_Date",
+  "98ba68f873e673d4c41a6e74de081f63c947b1c0" = "Discovery_Rescheduled_Meeting_Status",
+  "f9913d1583505195bbb5020294aefc9ad5d57e2c" = "Close_Call_Meeting_Date",
+  "8563cf9d2800465196214bfa9cbfb1c14cb1356e" = "Close_Call_Meeting_Status",
+  "091c2bf8b182de9c834d437a345dd741af705beb" = "Close_Call_Rescheduled_Meeting_Date",
+  "cae348495293f7e8b866121287bc428d4f226fe0" = "Close_Call_Rescheduled_Meeting_Status",
+  "a3fe04c57acc421c70dfb2d2188ac649b19c0553" = "Lead_Source",
+  "e48178dbcbfe9c66bf16bc7ab073ff19abbc9137" = "Setter",
+  "0d4d82907193b7c3e2be6379f367d250f9a8beac" = "Previous_Stage",
+  "4111ec80040f9551d9e6877bec6ba359011b5ee8" = "Product",
+  "8dd7b8ae6b655b4fd79bcc8b21c0ef8100797fd1" = "Organization_Context",
+  "05f6b166b4e6b9602d9d353d2e12ec07b4116a02" = "Industry",
+  "d85884bb1596e6f35ad566cacdea6828234dafdf" = "Pain_Why_Now",
+  "10b8dfd264b5e42f6c478b7acd6644eb916225a6" = "Value_Statement",
+  "a5b5b147376d2ab6aab24009c4f2554d8bc5966c" = "Discovery_Call_Lead",
+  "cb786eca327095ceb9e42ae739c3fdc9f1b0f94b" = "client_id",
+  "434422bc9886aff0ea27c2c12485cb1fca4cb1f6" = "session_id",
+  "54804915d026f8269cfd04dc30456b8c2d0ee921" = "utm_campaign_deal",
+  "f39d711915b7bab49ef5693d9ceb2f70c79d5669" = "utm_medium_deal",
+  "df4f4f88481423a5fa0f018c7a8e46cd43d1c4ba" = "utm_source_deal",
+  "a1d063caacc3bc335a2e4c9db1dcf34801d0af87" = "utm_campaign_lead",
+  "b8b7b08bc3521dc4b40f416c058b149e8716d5bd" = "utm_medium_lead",
+  "e3da7850f24abb49ad1d6690231d67235fcb9d8d" = "utm_source_lead"
+)
+
+# 1. GET ALL ACTIVE LEADS
+# Active leads ka data fetch karne ke liye loop
+base_url_active <- paste0("https://", company_domain, ".pipedrive.com/v1/leads")
+all_active <- list()
+start <- 0
+
+repeat {
+  res <- GET(base_url_active, query = list(api_token = api_token, start = start, limit = 500))
+  data <- fromJSON(content(res, "text", encoding = "UTF-8"))
+  if (length(data$data) > 0) all_active <- c(all_active, list(data$data))
+  if (is.null(data$additional_data$pagination$more_items_in_collection) || !data$additional_data$pagination$more_items_in_collection) break
+  start <- data$additional_data$pagination$next_start
+}
+leads_active <- bind_rows(all_active)
+leads_active$lead_status <- "active"
+
+# 2. GET ALL ARCHIVED LEADS
+# Archived leads ka data alag endpoint se nikalte hain
+base_url_archived <- paste0("https://", company_domain, ".pipedrive.com/v1/leads/archived")
+all_archived <- list()
+start <- 0
+
+repeat {
+  res <- GET(base_url_archived, query = list(api_token = api_token, start = start, limit = 500))
+  data <- fromJSON(content(res, "text", encoding = "UTF-8"))
+  if (length(data$data) > 0) all_archived <- c(all_archived, list(data$data))
+  if (is.null(data$additional_data$pagination$more_items_in_collection) || !data$additional_data$pagination$more_items_in_collection) break
+  start <- data$additional_data$pagination$next_start
+}
+leads_archived <- bind_rows(all_archived)
+leads_archived$lead_status <- "archived"
+
+# 3. RENAMING, LIST FIXING, AND RBINDING
+# Pehle column renaming karlete hain dono datasets par
+names(leads_active) <- ifelse(names(leads_active) %in% names(col_map), col_map[names(leads_active)], names(leads_active))
+names(leads_archived) <- ifelse(names(leads_archived) %in% names(col_map), col_map[names(leads_archived)], names(leads_archived))
+
+# List columns (label_ids) ko string mein convert karein taake join mein error na aaye
+fix_lists <- function(df) {
+  df$label_ids <- sapply(df$label_ids, function(x) paste(x, collapse = ","))
+  if ("value" %in% names(df)) {
+    df$value_amount <- df$value$amount
+    df$value_currency <- df$value$currency
+    df$value <- NULL
+  }
+  return(df)
+}
+leads_active <- fix_lists(leads_active)
+leads_archived <- fix_lists(leads_archived)
+
+# RBINDING: Sirf wo columns choose karein jo Active leads mein hain (intersection)
+common_cols <- intersect(names(leads_active), names(leads_archived))
+leads_final <- bind_rows(leads_active[, common_cols], leads_archived[, common_cols])
+
+# 4. BIGQUERY UPLOAD
+bq_auth()
+table <- bq_table(project = "bossmakeher", dataset = "raw", table = "leads_combined")
+
+bq_table_create(table, fields = leads_final)
+bq_table_upload(
+  x = table, # Table reference
+  values = leads_final, # Data you want to upload
+  write_disposition = "WRITE_TRUNCATE" # Options: "WRITE_TRUNCATE", "WRITE_APPEND", "WRITE_EMPTY"
+)
+
+print("Data process hogaya aur BigQuery mein upload hogaya!")
+
+
+# --- IDEMPOTENCY LOGIC (BIGQUERY CHECK) ---
+bq_auth()
+table_ref <- bq_table(project = project_id, dataset = dataset_id, table = table_id)
+
+# Agar table exist karti hai to purana data check karein
+if (bq_table_exists(table_ref)) {
+  # Sirf zaroori columns fetch karein comparison ke liye
+  existing_records_query <- bq_project_query(project_id, paste0("SELECT id, person_id, update_time FROM `", project_id, ".", dataset_id, ".", table_id, "`"))
+  existing_data <- bq_table_download(existing_records_query)
+  
+  # Existing data ko naye data ke sath "Anti-Join" karein (sirf wo rakhein jo match nahi karte)
+  # Hum id, person_id, aur update_time check kar rahe hain
+  leads_to_upload <- anti_join(leads_fetched, existing_data, by = c("id", "person_id", "update_time"))
+} else {
+  # Agar table nahi hai, to saara data upload hoga
+  leads_to_upload <- leads_fetched
+}
+
+# 4. FINAL UPLOAD (Only Updated/New Records)
+if (nrow(leads_to_upload) > 0) {
+  bq_table_upload(
+    x = table_ref,
+    values = leads_to_upload,
+    write_disposition = "WRITE_APPEND", # Naye/Updated records append karein
+    create_disposition = "CREATE_IF_NEEDED"
+  )
+  print(paste(nrow(leads_to_upload), "records upload ho gaye."))
+} else {
+  print("Koi naya ya updated record nahi mila.")
+}
