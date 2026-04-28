@@ -1,0 +1,117 @@
+import functions_framework
+import pandas as pd
+import numpy as np
+from google.cloud import bigquery
+from ChannelAttribution import markov_model
+
+@functions_framework.http
+def run_cais_attribution(request):
+    """
+    HTTP Cloud Function to run Markov and CAIS attribution.
+    Can be triggered via HTTP request or Google Cloud Scheduler.
+    """
+    
+    # Initialize BigQuery Client
+    bq_client = bigquery.Client()
+    
+    project_id = "your_project"
+    dataset_id = "your_dataset"
+    input_table = f"{project_id}.{dataset_id}.mapped_touches" # Output of your SQL query
+    output_table = f"{project_id}.{dataset_id}.campaign_level_attribution_cais"
+    
+    # -------------------------------------------------------------------------
+    # 1. Pull the unified event log from BigQuery
+    # -------------------------------------------------------------------------
+    sql = f"SELECT * FROM `{input_table}`"
+    df_touches = bq_client.query(sql).to_dataframe()
+
+    if df_touches.empty:
+        return "No data found.", 200
+
+    # -------------------------------------------------------------------------
+    # 2. Format paths to train the Global Markov Model
+    # -------------------------------------------------------------------------
+    # Group touches into sequential strings separated by ' > '
+    df_paths = df_touches.groupby(['deal_id', 'deal_value']).agg(
+        path=('channel_campaign', lambda x: ' > '.join(x.astype(str)))
+    ).reset_index()
+    
+    df_paths['total_conversions'] = 1
+
+    # -------------------------------------------------------------------------
+    # 3. Run Markov at the Campaign Level
+    # -------------------------------------------------------------------------
+    # out_more=True returns a dictionary with 'result' and 'removal_effects'
+    markov_out = markov_model(
+        Data=df_paths, 
+        var_path="path", 
+        var_conv="total_conversions", 
+        var_value="deal_value", 
+        out_more=True
+    )
+    
+    # Extract DataFrames from the model output
+    markov_weights = markov_out['result'][['channel_name', 'total_conversion_value']].rename(
+        columns={'total_conversion_value': 'global_markov_conv'}
+    )
+    removal_effects = markov_out['removal_effects'][['channel_name', 'removal_effect']]
+
+    # -------------------------------------------------------------------------
+    # 4. Calculate Row-Level Fractional Credit, CAIS, and attach Removal Impact
+    # -------------------------------------------------------------------------
+    # Join Markov weights and Removal effects back to the raw touches
+    df_final = pd.merge(df_touches, markov_weights, left_on='channel_campaign', right_on='channel_name', how='left')
+    df_final = pd.merge(df_final, removal_effects, left_on='channel_campaign', right_on='channel_name', how='left')
+
+    # Linear weight (Proxy for Shapley fair-share baseline)
+    df_final['linear_weight'] = 1.0 / df_final['total_touches']
+    
+    # Normalize Markov weights per deal
+    deal_markov_sums = df_final.groupby('deal_id')['global_markov_conv'].transform('sum')
+    df_final['markov_weight'] = np.where(deal_markov_sums > 0, df_final['global_markov_conv'] / deal_markov_sums, 0)
+    
+    # Calculate Raw CAIS = sqrt(Linear * Markov) * Removal_Effect
+    df_final['raw_cais'] = np.sqrt(df_final['linear_weight'] * df_final['markov_weight']) * df_final['removal_effect']
+    
+    # Normalize CAIS so the fractions sum to 1 per deal (prevents revenue duplication)
+    deal_cais_sums = df_final.groupby('deal_id')['raw_cais'].transform('sum')
+    df_final['cais_weight'] = np.where(deal_cais_sums > 0, df_final['raw_cais'] / deal_cais_sums, 0)
+
+    # -------------------------------------------------------------------------
+    # 5. Format Columns for the Client Dashboard
+    # -------------------------------------------------------------------------
+    # Tag Funnel Stage
+    conditions = [
+        (df_final['touch_order'] == 1),
+        (df_final['touch_order'] == df_final['total_touches']) & (df_final['total_touches'] > 1)
+    ]
+    choices = ['Top (Opener)', 'Bottom (Closer)']
+    df_final['funnel_stage'] = np.select(conditions, choices, default='Middle (Assister)')
+    
+    # Calculate Dollar Revenue Fractions
+    df_final['revenue_First'] = np.where(df_final['touch_order'] == 1, df_final['deal_value'], 0)
+    df_final['revenue_Last'] = np.where(df_final['touch_order'] == df_final['total_touches'], df_final['deal_value'], 0)
+    df_final['revenue_Markov'] = df_final['deal_value'] * df_final['markov_weight']
+    df_final['revenue_CAIS'] = df_final['deal_value'] * df_final['cais_weight']
+    
+    # Clean up the Removal Impact metric for presentation
+    df_final['Removal_Impact'] = (df_final['removal_effect'] * 100).round(1).astype(str) + '%'
+
+    # Select final columns to match the visual output
+    final_cols = [
+        'person_id', 'deal_id', 'deal_created_date', 'won_time', 'touchpoint_date', 
+        'channel_campaign', 'touch_order', 'funnel_stage', 'deal_value', 
+        'revenue_First', 'revenue_Last', 'Removal_Impact', 'revenue_Markov', 'revenue_CAIS'
+    ]
+    df_final = df_final[final_cols]
+
+    # -------------------------------------------------------------------------
+    # 6. Write the final table back to BigQuery
+    # -------------------------------------------------------------------------
+    job_config = bigquery.LoadJobConfig(
+        write_disposition="WRITE_TRUNCATE", # Overwrites the table with fresh math every run
+    )
+    
+    bq_client.load_table_from_dataframe(df_final, output_table, job_config=job_config).result()
+
+    return f"Success! Attribution model ran and wrote {len(df_final)} rows to {output_table}.", 200
