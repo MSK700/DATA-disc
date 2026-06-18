@@ -1,0 +1,105 @@
+from pyspark.sql import SparkSession
+from pyspark.ml.feature import StringIndexer, OneHotEncoder, VectorAssembler
+from pyspark.ml import Pipeline
+from econml.dml import CausalForestDML
+from sklearn.linear_model import LogisticRegressionCV
+from joblibspark import register_spark
+from joblib import parallel_backend
+import pandas as pd
+import numpy as np
+
+# 1. Initialize Distributed Spark Session
+spark = SparkSession.builder \
+    .appName("MultiStage_Causal_Forest_GA4") \
+    .config("spark.sql.execution.arrow.pyspark.enabled", "true") \
+    .getOrCreate()
+
+# Register Spark engine for distributed background tasks
+register_spark()
+
+# 2. Load Your Processing Table
+df_spark = spark.read.table("heroic-bliss-292505.staging.ga4_processed_funnel_days")
+
+# 3. Features Construction (X Matrix)
+categorical_cols = ['device_category', 'os', 'city', 'landing_page_path', 'source', 'medium']
+numeric_cols = ['days_ad_to_stage2', 'days_stage2_to_stage4', 'days_stage4_to_stage6']
+
+indexers = [StringIndexer(inputCol=col, outputCol=f"{col}_idx", handleInvalid="keep") for col in categorical_cols]
+encoders = [OneHotEncoder(inputCol=f"{col}_idx", outputCol=f"{col}_vec") for col in categorical_cols]
+
+assembler_X = VectorAssembler(
+    inputCols=[f"{col}_vec" for col in categorical_cols] + numeric_cols,
+    outputCol="features_X"
+)
+
+# Run data preparation matrix pipeline
+pipeline = Pipeline(stages=indexers + encoders + [assembler_X])
+df_prepared = pipeline.fit(df_spark).transform(df_spark)
+
+# 4. Prepare Treatment Feature (W)
+treatment_indexer = StringIndexer(inputCol="campaign_id", outputCol="W_binary", handleInvalid="keep")
+df_prepared = treatment_indexer.fit(df_prepared).transform(df_prepared)
+
+# 5. Extract Multi-Stage Matrices to High-Performance Arrays
+target_cols = [
+    "user_pseudo_id", "campaign_name", "days_stage4_to_stage6", 
+    "features_X", "W_binary", 
+    "reached_stage_2", "reached_stage_4", "reached_stage_6"
+]
+data_pd = df_prepared.select(*target_cols).toPandas()
+
+# Convert Spark structural columns into raw NumPy matrices
+X = np.stack(data_pd['features_X'].apply(lambda v: v.toArray()).values)
+W = data_pd['W_binary'].values
+
+# Split output targets out for our distinct multi-stage models
+Y_stage2 = data_pd['reached_stage_2'].values
+Y_stage4 = data_pd['reached_stage_4'].values
+Y_stage6 = data_pd['reached_stage_6'].values
+
+# 6. Initialize the Global Model Hyperparameters
+def build_causal_forest():
+    return CausalForestDML(
+        model_y=LogisticRegressionCV(max_iter=1000),
+        model_t=LogisticRegressionCV(max_iter=1000),
+        discrete_treatment=True,
+        n_estimators=500,
+        cv=3
+    )
+
+# 7. Train Distributed Forests sequentially over Spark Network
+with parallel_backend('spark', n_jobs=-1):
+    
+    # Model 1: Lift to Stage 2 (Discovery)
+    print("Training Forest 1/3: Lift to Stage 2...")
+    cf_stage2 = build_causal_forest()
+    cf_stage2.fit(Y_stage2, W, X=X)
+    cate_stage2 = cf_stage2.effect(X)
+    
+    # Model 2: Lift to Stage 4 (Intent)
+    print("Training Forest 2/3: Lift to Stage 4...")
+    cf_stage4 = build_causal_forest()
+    cf_stage4.fit(Y_stage4, W, X=X)
+    cate_stage4 = cf_stage4.effect(X)
+    
+    # Model 3: Lift to Stage 6 (Final Purchase)
+    print("Training Forest 3/3: Lift to Stage 6...")
+    cf_stage6 = build_causal_forest()
+    cf_stage6.fit(Y_stage6, W, X=X)
+    cate_stage6 = cf_stage6.effect(X)
+
+# 8. Recombine Matrices and User Metadata Profiles
+funnel_lift = pd.DataFrame({
+    'user_id': data_pd['user_pseudo_id'],
+    'campaign_name': data_pd['campaign_name'],
+    'days_cart_to_purchase': data_pd['days_stage4_to_stage6'],
+    'lift_to_stage2': cate_stage2,
+    'lift_to_stage4': cate_stage4,
+    'lift_to_stage6': cate_stage6
+})
+
+# 9. Return and Save Final Results to Your Enterprise Cluster Data Lake
+spark_output_df = spark.createDataFrame(funnel_lift)
+spark_output_df.write.mode("overwrite").saveAsTable("heroic-bliss-292505.staging.causal_multistage_lift_results")
+
+print("All three funnel stages successfully modeled. Dataset synced back to cluster storage.")
